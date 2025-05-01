@@ -14,6 +14,7 @@ import roop.globals
 
 TEMP_DIRECTORY = 'temp'
 TEMP_VIDEO_FILE = 'temp.mp4'
+TEMP_GIF_FILE = 'temp.gif'
 
 # monkey patch ssl for mac
 if platform.system().lower() == 'darwin':
@@ -58,8 +59,19 @@ def create_video(target_path: str, fps: float = 30) -> bool:
     if roop.globals.output_video_encoder in ['h264_nvenc', 'hevc_nvenc']:
         commands.extend(['-cq', str(output_video_quality)])
     commands.extend(['-pix_fmt', 'yuv420p', '-vf', 'colorspace=bt709:iall=bt601-6-625:fast=1', '-y', temp_output_path])
+    # if odd size is happened, use below command
+    # commands.extend(['-pix_fmt', 'yuv420p', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,colorspace=bt709:iall=bt601-6-625:fast=1', '-y', temp_output_path])
     return run_ffmpeg(commands)
 
+
+def create_gif(target_path: str, fps: float = 30) -> bool:
+    temp_output_path = get_temp_output_path(target_path)
+    temp_directory_path = get_temp_directory_path(target_path)
+    commands= ['-hwaccel', 'auto', '-r', str(fps), '-i', 
+               os.path.join(temp_directory_path, '%04d.' + roop.globals.temp_frame_format), 
+               '-vf', 'split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=single[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle', 
+               '-y', temp_output_path]
+    return run_ffmpeg(commands)
 
 def restore_audio(target_path: str, output_path: str) -> None:
     temp_output_path = get_temp_output_path(target_path)
@@ -80,8 +92,10 @@ def get_temp_directory_path(target_path: str) -> str:
 
 
 def get_temp_output_path(target_path: str) -> str:
-    temp_directory_path = get_temp_directory_path(target_path)
-    return os.path.join(temp_directory_path, TEMP_VIDEO_FILE)
+    if is_gif(target_path):
+        return os.path.join(get_temp_directory_path(target_path), TEMP_GIF_FILE)
+    else:
+        return os.path.join(get_temp_directory_path(target_path), TEMP_VIDEO_FILE)
 
 
 def normalize_output_path(source_path: str, target_path: str, output_path: str) -> Optional[str]:
@@ -125,6 +139,11 @@ def is_image(image_path: str) -> bool:
         return bool(mimetype and mimetype.startswith('image/'))
     return False
 
+def is_gif(image_path: str) -> bool:
+    if image_path and os.path.isfile(image_path):
+        mimetype, _ = mimetypes.guess_type(image_path)
+        return bool(mimetype and mimetype.startswith('image/gif'))
+    return False
 
 def is_video(video_path: str) -> bool:
     if video_path and os.path.isfile(video_path):

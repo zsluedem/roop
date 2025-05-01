@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:latest
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+  api:
+    image: zsluedem/swap-face:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+    environment:
+      - ALLOW_ORIGINS=*
+      - ALLOW_METHODS=*
+      - ALLOW_HEADERS=*
+      - ALLOW_CREDENTIALS=True
+      - UPLOAD_FOLDER=/app/uploads
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - BROKER_DB=0
+      - BACKEND_DB=1
+      - OUTPUT_FOLDER=/app/output
+    depends_on:
+      - redis
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["fastapi run --workers 4 api-server.py"]
+    restart: unless-stopped
+
+  worker:
+    image: zsluedem/swap-face:latest
+    deploy:
+      replicas: 1
+    volumes:
+      - ./output:/app/output
+      - ./uploads:/app/uploads
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - BROKER_DB=0
+      - BACKEND_DB=1
+      - EXECUTION_THREADS=4
+      - IS_FACE_ENHANCER=0
+    depends_on:
+      - redis
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["celery -A roop.swap_worker worker --loglevel=info"]
+    restart: unless-stopped
+
+  cron-job:
+    image: zsluedem/swap-face:latest
+    environment:
+      - UPLOAD_FOLDER=/app/uploads
+      - CHECK_INTERVAL=3600
+      - DAYS_THRESHOLD=1
+      - OUTPUT_FOLDER=/app/output
+    volumes:
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+    command: ["python cron-job.py"]
+    restart: unless-stopped
+
+volumes:
+  redis_data:

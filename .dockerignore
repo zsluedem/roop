@@ -1,0 +1,6 @@
+uploads
+output
+*.gif
+*.png
+venv
+__pycache__

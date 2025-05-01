@@ -20,7 +20,7 @@ import roop.metadata
 import roop.ui as ui
 from roop.predictor import predict_image, predict_video
 from roop.processors.frame.core import get_frame_processors_modules
-from roop.utilities import has_image_extension, is_image, is_video, detect_fps, create_video, extract_frames, get_temp_frame_paths, restore_audio, create_temp, move_temp, clean_temp, normalize_output_path
+from roop.utilities import create_gif, has_image_extension, is_gif, is_image, is_video, detect_fps, create_video, extract_frames, get_temp_frame_paths, restore_audio, create_temp, move_temp, clean_temp, normalize_output_path
 
 warnings.filterwarnings('ignore', category=FutureWarning, module='insightface')
 warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
@@ -174,11 +174,19 @@ def start() -> None:
     # create video
     if roop.globals.keep_fps:
         fps = detect_fps(roop.globals.target_path)
-        update_status(f'Creating video with {fps} FPS...')
-        create_video(roop.globals.target_path, fps)
+        if is_gif(roop.globals.target_path):
+            update_status(f'Creating gif with {fps} FPS...')
+            create_gif(roop.globals.target_path, fps)
+        else:
+            update_status(f'Creating video with {fps} FPS...')
+            create_video(roop.globals.target_path, fps)
     else:
-        update_status('Creating video with 30 FPS...')
-        create_video(roop.globals.target_path)
+        if is_gif(roop.globals.target_path):
+            update_status(f'Creating gif with {fps} FPS...')
+            create_gif(roop.globals.target_path, fps)
+        else:
+            update_status('Creating video with 30 FPS...')
+            create_video(roop.globals.target_path)
     # handle audio
     if roop.globals.skip_audio:
         move_temp(roop.globals.target_path, roop.globals.output_path)
