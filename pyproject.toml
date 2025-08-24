@@ -1,0 +1,23 @@
+[project]
+name = "roop-minimal"
+version = "0.1.0"
+description = "Minimal dependencies for roop face swapping"
+requires-python = "==3.11.*"
+dependencies = [
+    # Core ML libraries for face swapping
+    "insightface==0.7.3",
+    "onnxruntime==1.15.0",
+    "opencv-python==4.8.0.74",
+    "numpy==1.24.3",
+    "tensorflow==2.13.0",
+    
+    # Content safety
+    "opennsfw2==0.10.2",
+    
+    # Support libraries
+    "tqdm==4.65.0",
+    "requests==2.32.3",
+    "pillow>=10.0.0",
+    "protobuf==4.23.4",
+    "psutil==5.9.5",
+]

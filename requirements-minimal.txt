@@ -1,0 +1,13 @@
+# Minimal requirements for face swapping functionality
+# Core ML libraries
+insightface==0.7.3
+onnxruntime>=1.17.0
+opencv-python==4.8.0.74
+numpy>=1.24.3
+tensorflow>=2.16.1
+
+# Support libraries
+tqdm==4.65.0
+requests==2.32.3
+pillow==11.1.0
+protobuf==4.23.4

@@ -17,7 +17,13 @@ import onnxruntime
 import tensorflow
 import roop.globals
 import roop.metadata
-import roop.ui as ui
+# Optional GUI import - only needed for non-headless mode
+try:
+    import roop.ui as ui
+    UI_AVAILABLE = True
+except ImportError:
+    UI_AVAILABLE = False
+    ui = None
 from roop.predictor import predict_image, predict_video
 from roop.processors.frame.core import get_frame_processors_modules
 from roop.utilities import create_gif, has_image_extension, is_gif, is_image, is_video, detect_fps, create_video, extract_frames, get_temp_frame_paths, restore_audio, create_temp, move_temp, clean_temp, normalize_output_path
@@ -124,7 +130,7 @@ def pre_check() -> bool:
 
 def update_status(message: str, scope: str = 'ROOP.CORE') -> None:
     print(f'[{scope}] {message}')
-    if not roop.globals.headless:
+    if not roop.globals.headless and UI_AVAILABLE:
         ui.update_status(message)
 
 
@@ -224,5 +230,9 @@ def run() -> None:
     if roop.globals.headless:
         start()
     else:
-        window = ui.init(start, destroy)
-        window.mainloop()
+        if UI_AVAILABLE:
+            window = ui.init(start, destroy)
+            window.mainloop()
+        else:
+            print('[ROOP.CORE] GUI not available. Running in headless mode.')
+            start()
