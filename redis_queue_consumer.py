@@ -210,6 +210,10 @@ class RedisQueueConsumer:
             if result_image_path:
                 data["resultImagePath"] = result_image_path
             
+            print(f"🔄 Updating task status: {task_id} -> {status}")
+            print(f"   URL: {url}")
+            print(f"   Data: {data}")
+            
             response = requests.patch(url, json=data, headers=headers, timeout=10)
             
             if response.status_code == 200:
@@ -217,6 +221,8 @@ class RedisQueueConsumer:
                 return True
             else:
                 print(f"❌ Failed to update task status: {response.status_code} - {response.text}")
+                print(f"   Request URL: {url}")
+                print(f"   Request data: {data}")
                 return False
                 
         except Exception as e:
