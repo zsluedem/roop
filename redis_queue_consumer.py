@@ -160,10 +160,9 @@ class RedisQueueConsumer:
         Upload file to Cloudflare R2 and return public URL.
         """
         try:
-            # Generate R2 key with timestamp and task ID for uniqueness
-            timestamp = int(time.time())
+            # Generate R2 key with task ID for uniqueness
             file_extension = Path(local_path).suffix
-            r2_key = f"outputs/{timestamp}_{task_id}{file_extension}"
+            r2_key = f"outputs/{task_id}{file_extension}"
             
             # Upload to R2
             with open(local_path, 'rb') as f:
@@ -332,8 +331,7 @@ class RedisQueueConsumer:
                 result_r2_path = public_url.replace(self.r2_public_url.rstrip('/'), '').lstrip('/')
             else:
                 # Fallback - extract from upload path pattern
-                timestamp = int(time.time())
-                result_r2_path = f"outputs/{timestamp}_{task_id}.jpeg"
+                result_r2_path = f"outputs/{task_id}.jpeg"
             
             # Update status to DONE with result path
             self.update_task_status(task_id, "DONE", result_r2_path)
