@@ -1,27 +1,38 @@
-# Use Python 3.10 as base image
-FROM python:3.10-slim
+# Use Python 3.11 as base image (matches pyproject.toml requirement)
+FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-RUN apt-get update && apt-get install build-essential libssl-dev libffi-dev python3-lib2to3 python3-distutils python3-dev python3-tk ffmpeg libsm6 libxext6 -y
-RUN pip install --upgrade pip
-# Copy requirements first to leverage Docker cache
-COPY requirements-cpu.txt .
+# Install system dependencies required for face processing and uv
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    python3-dev \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --no-deps -r requirements-cpu.txt
+# Install uv package manager
+RUN pip install --no-cache-dir uv
 
-# fix torchvision import error
-# https://github.com/AUTOMATIC1111/stable-diffusion-webui/issues/13985#issuecomment-1813885266
-RUN sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' /usr/local/lib/python3.10/site-packages/basicsr/data/degradations.py
+# Copy dependency files first to leverage Docker cache
+COPY pyproject.toml uv.lock* ./
+
+# Install Python dependencies using uv
+RUN uv sync --frozen
 
 # Copy the rest of the application
 COPY . .
 
-RUN mkdir -p /root/.insightface/models && mv models/buffalo_l /root/.insightface/models/ && mkdir -p /root/.opennsfw2/weights && mv models/open_nsfw_weights.h5 /root/.opennsfw2/weights/
+# Setup model directories and move models if they exist
+RUN mkdir -p /root/.insightface/models && \
+    mkdir -p /root/.opennsfw2/weights && \
+    if [ -d "models/buffalo_l" ]; then mv models/buffalo_l /root/.insightface/models/; fi && \
+    if [ -f "models/open_nsfw_weights.h5" ]; then mv models/open_nsfw_weights.h5 /root/.opennsfw2/weights/; fi
 
-# Expose ports for FastAPI and Redis
-EXPOSE 8000
-
-ENTRYPOINT ["/bin/bash", "-c"]
+# Set default entry point to run redis queue consumer
+CMD ["uv", "run", "python", "redis_queue_consumer.py"]
