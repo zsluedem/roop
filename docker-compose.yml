@@ -27,6 +27,7 @@ services:
       - DOWNLOAD_DIR=/app/downloads
       - OUTPUT_DIR=/app/output
       - POLL_INTERVAL=${POLL_INTERVAL:-1.0}
+      - BLOCKING_TIMEOUT=${BLOCKING_TIMEOUT:-30.0}
     restart: unless-stopped
     # Uses default CMD from Dockerfile: redis_queue_consumer.py
 

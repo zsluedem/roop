@@ -22,10 +22,12 @@ import time
 import subprocess
 import tempfile
 import shutil
+import threading
 from pathlib import Path
 from typing import Dict, Optional, Any
 from urllib.parse import urlparse
 from uuid import uuid4
+from queue import Queue
 
 import boto3
 import requests
@@ -44,10 +46,10 @@ class RedisQueueConsumer:
         if not self.redis_url or not self.redis_token:
             raise ValueError("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set")
             
-        # Worker configuration
-        self.poll_interval = float(os.getenv('POLL_INTERVAL', '1.0'))
+        # Queue configuration
         self.queue_name = 'priority_queue'
         self.data_key = f'{self.queue_name}:data'
+        self.notification_channel = 'task_notifications'
         
         # API configuration for task status updates
         self.api_base_url = os.getenv('API_BASE_URL', 'https://aifacesswap.com')
@@ -90,6 +92,7 @@ class RedisQueueConsumer:
         
         # Shutdown flag
         self.shutdown_requested = False
+        
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -228,27 +231,103 @@ class RedisQueueConsumer:
             print(f"❌ Error updating task status: {e}")
             return False
         
-    def get_queue_size(self) -> int:
-        """Get current queue size"""
-        try:
-            return self.redis.zcard(self.queue_name)
-        except Exception as e:
-            print(f"Error getting queue size: {e}")
-            return 0
-            
-    def pop_task(self) -> Optional[Dict[str, Any]]:
+    def run_pubsub_consumer(self):
         """
-        Pop highest priority task from the queue atomically.
-        Returns task data with metadata or None if no tasks available.
+        Main PUBSUB consumer - subscribes to notifications and processes tasks.
+        This is the ONLY way the consumer works - no polling, no fallbacks.
+        """
+        print(f"🔔 Starting PUBSUB consumer for channel: {self.notification_channel}")
+        
+        # Extract base URL from Redis REST URL
+        base_url = self.redis_url.rstrip('/')
+        subscribe_url = f"{base_url}/subscribe/{self.notification_channel}"
+        
+        headers = {
+            'Authorization': f'Bearer {self.redis_token}',
+            'Accept': 'text/event-stream'
+        }
+        
+        print(f"📡 Connecting to SSE endpoint: {subscribe_url}")
+        
+        while not self.shutdown_requested:
+            try:
+                # Connect to Server-Sent Events endpoint
+                response = requests.get(subscribe_url, headers=headers, stream=True, timeout=None)
+                response.raise_for_status()
+                
+                print("✅ PUBSUB connection established!")
+                print("🎯 Waiting for task notifications...")
+                
+                processed_count = 0
+                
+                for line in response.iter_lines(decode_unicode=True):
+                    if self.shutdown_requested:
+                        break
+                        
+                    if line and line.startswith('data: '):
+                        try:
+                            # Parse SSE data format: "data: message,channel,content"
+                            data = line[6:]  # Remove "data: " prefix
+                            parts = data.split(',', 2)  # Split into max 3 parts
+                            
+                            if len(parts) >= 3 and parts[0] == 'message':
+                                channel = parts[1]
+                                message_content = parts[2]
+                                
+                                if channel == self.notification_channel:
+                                    # Got a task notification - process it immediately
+                                    try:
+                                        notification = json.loads(message_content)
+                                        task_id = notification.get('taskId', 'unknown')
+                                        print(f"📩 Received notification for task: {task_id}")
+                                        
+                                        # Pop the task from Redis queue
+                                        task = self._pop_and_process_task()
+                                        
+                                        if task:
+                                            processed_count += 1
+                                            print(f"✅ Task {task['task_id']} processed (total: {processed_count})")
+                                        else:
+                                            print(f"⚠️ No task found in queue for notification {task_id}")
+                                            
+                                    except json.JSONDecodeError:
+                                        print(f"⚠️ Invalid JSON in notification: {message_content}")
+                                    except Exception as e:
+                                        print(f"⚠️ Error processing notification: {e}")
+                                        
+                            elif parts[0] == 'subscribe':
+                                print(f"📡 Subscribed to channel: {parts[1]}")
+                                
+                        except Exception as e:
+                            print(f"⚠️ Error parsing SSE message: {e}")
+                            continue
+                            
+                print(f"Worker stopped. Total tasks processed: {processed_count}")
+                            
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️ PUBSUB connection lost: {e}")
+                if not self.shutdown_requested:
+                    print("🔄 Retrying connection in 5 seconds...")
+                    time.sleep(5)
+            except Exception as e:
+                print(f"⚠️ PUBSUB error: {e}")
+                if not self.shutdown_requested:
+                    print("🔄 Retrying connection in 5 seconds...")
+                    time.sleep(5)
+    
+    def _pop_and_process_task(self) -> Optional[Dict[str, Any]]:
+        """
+        Pop task from queue and process it immediately.
+        Returns task data if successful, None otherwise.
         """
         try:
-            # Use ZPOPMIN to atomically get and remove highest priority task
+            # Pop highest priority task from queue
             result = self.redis.zpopmin(self.queue_name, count=1)
             
             if not result:
                 return None
                 
-            # Extract task ID from result
+            # Extract task ID and priority
             task_id = result[0][0]  # First item's member
             priority = result[0][1]  # First item's score
             
@@ -256,7 +335,7 @@ class RedisQueueConsumer:
             task_data_json = self.redis.hget(self.data_key, task_id)
             
             if not task_data_json:
-                print(f"Warning: Task data not found for task ID: {task_id}")
+                print(f"⚠️ Task data not found for task ID: {task_id}")
                 return None
                 
             # Parse task data
@@ -265,14 +344,27 @@ class RedisQueueConsumer:
             # Remove task data from hash (cleanup)
             self.redis.hdel(self.data_key, task_id)
             
-            return {
+            # Build task object
+            task = {
                 'task_id': task_id,
                 'priority': priority,
                 'data': task_data
             }
             
+            print(f"📥 Popped task: {task_id} (priority: {priority})")
+            
+            # Process the task
+            result_url = self.process_task(task)
+            
+            if result_url:
+                print(f"🎉 Task completed with result: {result_url}")
+            else:
+                print("❌ Task processing failed")
+                
+            return task
+            
         except Exception as e:
-            print(f"Error popping task: {e}")
+            print(f"⚠️ Error popping/processing task: {e}")
             return None
             
     def process_task(self, task: Dict[str, Any]) -> Optional[str]:
@@ -381,53 +473,22 @@ class RedisQueueConsumer:
                 print(f"  {key}: {value}")
         
     def run(self):
-        """Main worker loop"""
+        """Main worker - pure PUBSUB consumer"""
         print("Starting Redis Queue Consumer...")
         
         try:
-            # Test Redis connection
-            queue_size = self.get_queue_size()
-            print(f"Connected to Upstash Redis. Queue size: {queue_size}")
+            # Test Redis connection with a simple operation
+            self.redis.ping()
+            print("✅ Connected to Upstash Redis")
             
         except Exception as e:
-            print(f"Failed to connect to Redis: {e}")
+            print(f"❌ Failed to connect to Redis: {e}")
             sys.exit(1)
             
-        print(f"Polling every {self.poll_interval} seconds. Press Ctrl+C to stop.\n")
+        print("🚀 Running in PUBSUB-only mode. Press Ctrl+C to stop.\n")
         
-        processed_count = 0
-        
-        while not self.shutdown_requested:
-            try:
-                # Pop next task from queue
-                task = self.pop_task()
-                
-                if task:
-                    # Process the task (download, swap, upload)
-                    result_url = self.process_task(task)
-                    processed_count += 1
-                    
-                    # Show remaining queue size
-                    remaining = self.get_queue_size()
-                    print(f"Queue size: {remaining} remaining")
-                    print(f"Total processed: {processed_count}")
-                    
-                    if result_url:
-                        print(f"Task completed with result: {result_url}")
-                    else:
-                        print("Task failed - see error messages above")
-                    
-                else:
-                    # No tasks available, wait before polling again
-                    time.sleep(self.poll_interval)
-                    
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                print(f"Error in worker loop: {e}")
-                time.sleep(self.poll_interval)
-                
-        print(f"\nWorker stopped. Total tasks processed: {processed_count}")
+        # Run the PUBSUB consumer (this is the main loop)
+        self.run_pubsub_consumer()
 
 def main():
     """Entry point"""
