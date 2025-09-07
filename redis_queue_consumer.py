@@ -100,7 +100,13 @@ class RedisQueueConsumer:
         
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully"""
-        print(f"\nShutdown signal received ({signum}). Stopping worker...")
+        if self.shutdown_requested:
+            # Second Ctrl+C - force exit
+            print(f"\n🛑 Force exit requested. Terminating immediately...")
+            sys.exit(1)
+        
+        print(f"\n⏹️ Shutdown signal received ({signum}). Stopping worker...")
+        print("   (Press Ctrl+C again to force exit)")
         self.shutdown_requested = True
         
     def download_image(self, image_path: str, filename: str) -> str:
@@ -158,14 +164,17 @@ class RedisQueueConsumer:
         except Exception as e:
             raise Exception(f"Failed to execute face swap: {e}")
             
-    def upload_to_r2(self, local_path: str, task_id: str) -> str:
+    def upload_to_r2(self, local_path: str, task_id: str, user_id: str = None) -> str:
         """
         Upload file to Cloudflare R2 and return public URL.
         """
         try:
-            # Generate R2 key with task ID for uniqueness
-            file_extension = Path(local_path).suffix
-            r2_key = f"outputs/{task_id}{file_extension}"
+            # Generate R2 key with new structure: /uploads/{user_id}/outputs/{task_id}.img
+            if user_id:
+                r2_key = f"uploads/{user_id}/outputs/{task_id}.img"
+            else:
+                # Fallback for anonymous users
+                r2_key = f"uploads/anonymous/outputs/{task_id}.img"
             
             # Upload to R2
             with open(local_path, 'rb') as f:
@@ -249,6 +258,8 @@ class RedisQueueConsumer:
         
         print(f"📡 Connecting to SSE endpoint: {subscribe_url}")
         
+        processed_count = 0
+        
         while not self.shutdown_requested:
             try:
                 # Connect to Server-Sent Events endpoint
@@ -258,51 +269,59 @@ class RedisQueueConsumer:
                 print("✅ PUBSUB connection established!")
                 print("🎯 Waiting for task notifications...")
                 
-                processed_count = 0
-                
-                for line in response.iter_lines(decode_unicode=True):
-                    if self.shutdown_requested:
-                        break
-                        
-                    if line and line.startswith('data: '):
-                        try:
-                            # Parse SSE data format: "data: message,channel,content"
-                            data = line[6:]  # Remove "data: " prefix
-                            parts = data.split(',', 2)  # Split into max 3 parts
+                try:
+                    for line in response.iter_lines(decode_unicode=True):
+                        if self.shutdown_requested:
+                            print("⏹️ Shutdown requested, closing SSE connection...")
+                            break
                             
-                            if len(parts) >= 3 and parts[0] == 'message':
-                                channel = parts[1]
-                                message_content = parts[2]
+                        if line and line.startswith('data: '):
+                            try:
+                                # Parse SSE data format: "data: message,channel,content"
+                                data = line[6:]  # Remove "data: " prefix
+                                parts = data.split(',', 2)  # Split into max 3 parts
                                 
-                                if channel == self.notification_channel:
-                                    # Got a task notification - process it immediately
-                                    try:
-                                        notification = json.loads(message_content)
-                                        task_id = notification.get('taskId', 'unknown')
-                                        print(f"📩 Received notification for task: {task_id}")
-                                        
-                                        # Pop the task from Redis queue
-                                        task = self._pop_and_process_task()
-                                        
-                                        if task:
-                                            processed_count += 1
-                                            print(f"✅ Task {task['task_id']} processed (total: {processed_count})")
-                                        else:
-                                            print(f"⚠️ No task found in queue for notification {task_id}")
+                                if len(parts) >= 3 and parts[0] == 'message':
+                                    channel = parts[1]
+                                    message_content = parts[2]
+                                    
+                                    if channel == self.notification_channel:
+                                        # Got a task notification - process it immediately
+                                        try:
+                                            notification = json.loads(message_content)
+                                            task_id = notification.get('taskId', 'unknown')
+                                            print(f"📩 Received notification for task: {task_id}")
                                             
-                                    except json.JSONDecodeError:
-                                        print(f"⚠️ Invalid JSON in notification: {message_content}")
-                                    except Exception as e:
-                                        print(f"⚠️ Error processing notification: {e}")
-                                        
-                            elif parts[0] == 'subscribe':
-                                print(f"📡 Subscribed to channel: {parts[1]}")
-                                
-                        except Exception as e:
-                            print(f"⚠️ Error parsing SSE message: {e}")
-                            continue
+                                            # Pop the task from Redis queue
+                                            task = self._pop_and_process_task()
+                                            
+                                            if task:
+                                                processed_count += 1
+                                                print(f"✅ Task {task['task_id']} processed (total: {processed_count})")
+                                            else:
+                                                print(f"⚠️ No task found in queue for notification {task_id}")
+                                                
+                                        except json.JSONDecodeError:
+                                            print(f"⚠️ Invalid JSON in notification: {message_content}")
+                                        except Exception as e:
+                                            print(f"⚠️ Error processing notification: {e}")
+                                            
+                                elif parts[0] == 'subscribe':
+                                    print(f"📡 Subscribed to channel: {parts[1]}")
+                                    
+                            except Exception as e:
+                                print(f"⚠️ Error parsing SSE message: {e}")
+                                continue
                             
-                print(f"Worker stopped. Total tasks processed: {processed_count}")
+                except KeyboardInterrupt:
+                    print("⏹️ KeyboardInterrupt received during SSE")
+                    self.shutdown_requested = True
+                    break
+                finally:
+                    try:
+                        response.close()
+                    except:
+                        pass
                             
             except requests.exceptions.RequestException as e:
                 print(f"⚠️ PUBSUB connection lost: {e}")
@@ -314,6 +333,8 @@ class RedisQueueConsumer:
                 if not self.shutdown_requested:
                     print("🔄 Retrying connection in 5 seconds...")
                     time.sleep(5)
+        
+        print(f"\n🛑 Worker stopped. Total tasks processed: {processed_count}")
     
     def _pop_and_process_task(self) -> Optional[Dict[str, Any]]:
         """
@@ -353,7 +374,11 @@ class RedisQueueConsumer:
             
             print(f"📥 Popped task: {task_id} (priority: {priority})")
             
-            # Process the task
+            # Process the task (check for shutdown during processing)
+            if self.shutdown_requested:
+                print("⏹️ Shutdown requested during task processing")
+                return task
+                
             result_url = self.process_task(task)
             
             if result_url:
@@ -391,6 +416,11 @@ class RedisQueueConsumer:
             print(f"  Action: {data.get('action', 'unknown')}")
             print(f"  Priority: {int(task['priority'])}")
             
+            # Check for shutdown before starting
+            if self.shutdown_requested:
+                print("⏹️ Shutdown requested, skipping task processing")
+                return None
+                
             # Update status to PREPARING
             self.update_task_status(task_id, "PREPARING")
             
@@ -400,11 +430,21 @@ class RedisQueueConsumer:
                 raise Exception("swapImage path not provided in task data")
             swap_path = self.download_image(swap_image_path, swap_filename)
             
+            # Check for shutdown after download
+            if self.shutdown_requested:
+                print("⏹️ Shutdown requested during download")
+                return None
+            
             # Download target image
             target_image_path = data.get('targetImage') 
             if not target_image_path:
                 raise Exception("targetImage path not provided in task data")
             target_path = self.download_image(target_image_path, target_filename)
+            
+            # Check for shutdown before face swap
+            if self.shutdown_requested:
+                print("⏹️ Shutdown requested before face swap")
+                return None
             
             # Update status to PROCESSING
             self.update_task_status(task_id, "PROCESSING")
@@ -413,17 +453,26 @@ class RedisQueueConsumer:
             print(f"Running face swap: {swap_path} -> {target_path}")
             self.run_face_swap(swap_path, target_path, output_path)
             
+            # Check for shutdown after face swap
+            if self.shutdown_requested:
+                print("⏹️ Shutdown requested after face swap")
+                return None
+            
             # Upload result to R2
             print("Uploading result to R2...")
-            public_url = self.upload_to_r2(output_path, task_id)
+            user_id = data.get('userId')
+            public_url = self.upload_to_r2(output_path, task_id, user_id)
             
             # Extract result R2 path for database
             # Convert public URL back to R2 path
             if self.r2_public_url and public_url.startswith(self.r2_public_url):
                 result_r2_path = public_url.replace(self.r2_public_url.rstrip('/'), '').lstrip('/')
             else:
-                # Fallback - extract from upload path pattern
-                result_r2_path = f"outputs/{task_id}.jpeg"
+                # Fallback - extract from upload path pattern with new structure
+                if user_id:
+                    result_r2_path = f"uploads/{user_id}/outputs/{task_id}.img"
+                else:
+                    result_r2_path = f"uploads/anonymous/outputs/{task_id}.img"
             
             # Update status to DONE with result path
             self.update_task_status(task_id, "DONE", result_r2_path)
