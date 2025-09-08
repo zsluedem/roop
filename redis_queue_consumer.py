@@ -336,13 +336,11 @@ class RedisQueueConsumer:
             except requests.exceptions.RequestException as e:
                 logger.warning("PUBSUB connection lost: {}", e)
                 if not self.shutdown_requested:
-                    logger.info("Retrying connection in 5 seconds...")
-                    time.sleep(5)
+                    logger.info("Reconnecting immediately...")
             except Exception as e:
                 logger.warning("PUBSUB error: {}", e)
                 if not self.shutdown_requested:
-                    logger.info("Retrying connection in 5 seconds...")
-                    time.sleep(5)
+                    logger.info("Reconnecting immediately...")
         
         logger.info("Worker stopped. Total tasks processed: {}", processed_count)
     
