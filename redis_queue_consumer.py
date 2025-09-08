@@ -33,9 +33,19 @@ import boto3
 import requests
 from dotenv import load_dotenv
 from upstash_redis import Redis
+from loguru import logger
 
 # Load environment variables
 load_dotenv()
+
+# Configure Loguru logging
+logger.remove()  # Remove default handler
+logger.add(
+    sys.stderr, 
+    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    level="DEBUG",
+    colorize=True
+)
 
 class RedisQueueConsumer:
     def __init__(self):
@@ -56,9 +66,9 @@ class RedisQueueConsumer:
         self.worker_api_key = os.getenv('WORKER_API_KEY')
         
         if not self.worker_api_key:
-            print("Warning: WORKER_API_KEY not set. Task status updates will fail.")
+            logger.warning("WORKER_API_KEY not set. Task status updates will fail.")
         else:
-            print("API key configured for task status updates")
+            logger.info("API key configured for task status updates")
         
         # Image processing configuration
         self.download_dir = os.getenv('DOWNLOAD_DIR', './downloads')
@@ -102,11 +112,11 @@ class RedisQueueConsumer:
         """Handle shutdown signals gracefully"""
         if self.shutdown_requested:
             # Second Ctrl+C - force exit
-            print(f"\n🛑 Force exit requested. Terminating immediately...")
+            logger.critical("Force exit requested. Terminating immediately...")
             sys.exit(1)
         
-        print(f"\n⏹️ Shutdown signal received ({signum}). Stopping worker...")
-        print("   (Press Ctrl+C again to force exit)")
+        logger.warning("Shutdown signal received ({}). Stopping worker...", signum)
+        logger.info("(Press Ctrl+C again to force exit)")
         self.shutdown_requested = True
         
     def download_image(self, image_path: str, filename: str) -> str:
@@ -125,7 +135,7 @@ class RedisQueueConsumer:
             with open(local_path, 'wb') as f:
                 self.r2_client.download_fileobj(self.r2_bucket, r2_key, f)
                 
-            print(f"Downloaded from R2: {r2_key} -> {local_path}")
+            logger.debug("Downloaded from R2: {} -> {}", r2_key, local_path)
             return str(local_path)
             
         except Exception as e:
@@ -144,7 +154,7 @@ class RedisQueueConsumer:
                 '--frame-processor', 'face_swapper'
             ]
             
-            print(f"Executing: {' '.join(cmd)}")
+            logger.info("Executing face swap: {}", ' '.join(cmd))
             
             result = subprocess.run(
                 cmd,
@@ -157,7 +167,7 @@ class RedisQueueConsumer:
             if result.returncode != 0:
                 raise Exception(f"Face swap failed with exit code {result.returncode}. stderr: {result.stderr}")
                 
-            print(f"Face swap completed successfully: {output_path}")
+            logger.success("Face swap completed successfully: {}", output_path)
             
         except subprocess.TimeoutExpired:
             raise Exception("Face swap command timed out after 5 minutes")
@@ -169,12 +179,12 @@ class RedisQueueConsumer:
         Upload file to Cloudflare R2 and return public URL.
         """
         try:
-            # Generate R2 key with new structure: /uploads/{user_id}/outputs/{task_id}.img
+            # Generate R2 key with new structure: /uploads/{user_id}/outputs/{task_id}.jpeg
             if user_id:
-                r2_key = f"uploads/{user_id}/outputs/{task_id}.img"
+                r2_key = f"uploads/{user_id}/outputs/{task_id}.jpeg"
             else:
                 # Fallback for anonymous users
-                r2_key = f"uploads/anonymous/outputs/{task_id}.img"
+                r2_key = f"uploads/anonymous/outputs/{task_id}.jpeg"
             
             # Upload to R2
             with open(local_path, 'rb') as f:
@@ -196,7 +206,7 @@ class RedisQueueConsumer:
                     ExpiresIn=86400  # 24 hours
                 )
             
-            print(f"Uploaded to R2: {r2_key} -> {public_url}")
+            logger.success("Uploaded to R2: {} -> {}", r2_key, public_url)
             return public_url
             
         except Exception as e:
@@ -207,7 +217,7 @@ class RedisQueueConsumer:
         Update task status in D1 database via API endpoint.
         """
         if not self.worker_api_key:
-            print("Warning: No API key configured, skipping status update")
+            logger.warning("No API key configured, skipping status update")
             return False
             
         try:
@@ -221,23 +231,23 @@ class RedisQueueConsumer:
             if result_image_path:
                 data["resultImagePath"] = result_image_path
             
-            print(f"🔄 Updating task status: {task_id} -> {status}")
-            print(f"   URL: {url}")
-            print(f"   Data: {data}")
+            logger.info("Updating task status: {} -> {}", task_id, status)
+            logger.debug("API URL: {}", url)
+            logger.debug("Request data: {}", data)
             
             response = requests.patch(url, json=data, headers=headers, timeout=10)
             
             if response.status_code == 200:
-                print(f"✅ Task {task_id} status updated to {status}")
+                logger.success("Task {} status updated to {}", task_id, status)
                 return True
             else:
-                print(f"❌ Failed to update task status: {response.status_code} - {response.text}")
-                print(f"   Request URL: {url}")
-                print(f"   Request data: {data}")
+                logger.error("Failed to update task status: {} - {}", response.status_code, response.text)
+                logger.debug("Request URL: {}", url)
+                logger.debug("Request data: {}", data)
                 return False
                 
         except Exception as e:
-            print(f"❌ Error updating task status: {e}")
+            logger.exception("Error updating task status: {}", e)
             return False
         
     def run_pubsub_consumer(self):
@@ -245,7 +255,7 @@ class RedisQueueConsumer:
         Main PUBSUB consumer - subscribes to notifications and processes tasks.
         This is the ONLY way the consumer works - no polling, no fallbacks.
         """
-        print(f"🔔 Starting PUBSUB consumer for channel: {self.notification_channel}")
+        logger.info("Starting PUBSUB consumer for channel: {}", self.notification_channel)
         
         # Extract base URL from Redis REST URL
         base_url = self.redis_url.rstrip('/')
@@ -256,7 +266,7 @@ class RedisQueueConsumer:
             'Accept': 'text/event-stream'
         }
         
-        print(f"📡 Connecting to SSE endpoint: {subscribe_url}")
+        logger.info("Connecting to SSE endpoint: {}", subscribe_url)
         
         processed_count = 0
         
@@ -266,13 +276,13 @@ class RedisQueueConsumer:
                 response = requests.get(subscribe_url, headers=headers, stream=True, timeout=None)
                 response.raise_for_status()
                 
-                print("✅ PUBSUB connection established!")
-                print("🎯 Waiting for task notifications...")
+                logger.success("PUBSUB connection established!")
+                logger.info("Waiting for task notifications...")
                 
                 try:
                     for line in response.iter_lines(decode_unicode=True):
                         if self.shutdown_requested:
-                            print("⏹️ Shutdown requested, closing SSE connection...")
+                            logger.warning("Shutdown requested, closing SSE connection...")
                             break
                             
                         if line and line.startswith('data: '):
@@ -290,31 +300,31 @@ class RedisQueueConsumer:
                                         try:
                                             notification = json.loads(message_content)
                                             task_id = notification.get('taskId', 'unknown')
-                                            print(f"📩 Received notification for task: {task_id}")
+                                            logger.info("Received notification for task: {}", task_id)
                                             
                                             # Pop the task from Redis queue
                                             task = self._pop_and_process_task()
                                             
                                             if task:
                                                 processed_count += 1
-                                                print(f"✅ Task {task['task_id']} processed (total: {processed_count})")
+                                                logger.success("Task {} processed (total: {})", task['task_id'], processed_count)
                                             else:
-                                                print(f"⚠️ No task found in queue for notification {task_id}")
+                                                logger.warning("No task found in queue for notification {}", task_id)
                                                 
                                         except json.JSONDecodeError:
-                                            print(f"⚠️ Invalid JSON in notification: {message_content}")
+                                            logger.warning("Invalid JSON in notification: {}", message_content)
                                         except Exception as e:
-                                            print(f"⚠️ Error processing notification: {e}")
+                                            logger.warning("Error processing notification: {}", e)
                                             
                                 elif parts[0] == 'subscribe':
-                                    print(f"📡 Subscribed to channel: {parts[1]}")
+                                    logger.info("Subscribed to channel: {}", parts[1])
                                     
                             except Exception as e:
-                                print(f"⚠️ Error parsing SSE message: {e}")
+                                logger.warning("Error parsing SSE message: {}", e)
                                 continue
                             
                 except KeyboardInterrupt:
-                    print("⏹️ KeyboardInterrupt received during SSE")
+                    logger.warning("KeyboardInterrupt received during SSE")
                     self.shutdown_requested = True
                     break
                 finally:
@@ -324,17 +334,17 @@ class RedisQueueConsumer:
                         pass
                             
             except requests.exceptions.RequestException as e:
-                print(f"⚠️ PUBSUB connection lost: {e}")
+                logger.warning("PUBSUB connection lost: {}", e)
                 if not self.shutdown_requested:
-                    print("🔄 Retrying connection in 5 seconds...")
+                    logger.info("Retrying connection in 5 seconds...")
                     time.sleep(5)
             except Exception as e:
-                print(f"⚠️ PUBSUB error: {e}")
+                logger.warning("PUBSUB error: {}", e)
                 if not self.shutdown_requested:
-                    print("🔄 Retrying connection in 5 seconds...")
+                    logger.info("Retrying connection in 5 seconds...")
                     time.sleep(5)
         
-        print(f"\n🛑 Worker stopped. Total tasks processed: {processed_count}")
+        logger.info("Worker stopped. Total tasks processed: {}", processed_count)
     
     def _pop_and_process_task(self) -> Optional[Dict[str, Any]]:
         """
@@ -356,7 +366,7 @@ class RedisQueueConsumer:
             task_data_json = self.redis.hget(self.data_key, task_id)
             
             if not task_data_json:
-                print(f"⚠️ Task data not found for task ID: {task_id}")
+                logger.warning("Task data not found for task ID: {}", task_id)
                 return None
                 
             # Parse task data
@@ -372,24 +382,24 @@ class RedisQueueConsumer:
                 'data': task_data
             }
             
-            print(f"📥 Popped task: {task_id} (priority: {priority})")
+            logger.info("Popped task: {} (priority: {})", task_id, priority)
             
             # Process the task (check for shutdown during processing)
             if self.shutdown_requested:
-                print("⏹️ Shutdown requested during task processing")
+                logger.warning("Shutdown requested during task processing")
                 return task
                 
             result_url = self.process_task(task)
             
             if result_url:
-                print(f"🎉 Task completed with result: {result_url}")
+                logger.success("Task completed with result: {}", result_url)
             else:
-                print("❌ Task processing failed")
+                logger.error("Task processing failed")
                 
             return task
             
         except Exception as e:
-            print(f"⚠️ Error popping/processing task: {e}")
+            logger.exception("Error popping/processing task: {}", e)
             return None
             
     def process_task(self, task: Dict[str, Any]) -> Optional[str]:
@@ -412,13 +422,11 @@ class RedisQueueConsumer:
         output_path = str(Path(self.output_dir) / output_filename)
         
         try:
-            print(f"\nProcessing Task: {task_id}")
-            print(f"  Action: {data.get('action', 'unknown')}")
-            print(f"  Priority: {int(task['priority'])}")
+            logger.info("Processing task: {} (action: {}, priority: {})", task_id, data.get('action', 'unknown'), int(task['priority']))
             
             # Check for shutdown before starting
             if self.shutdown_requested:
-                print("⏹️ Shutdown requested, skipping task processing")
+                logger.warning("Shutdown requested, skipping task processing")
                 return None
                 
             # Update status to PREPARING
@@ -426,40 +434,49 @@ class RedisQueueConsumer:
             
             # Download swap image (source)
             swap_image_path = data.get('swapImage')
+            logger.info("Swap image path: {}", swap_image_path)
             if not swap_image_path:
                 raise Exception("swapImage path not provided in task data")
+            logger.info("Downloading swap image: {} -> {}", swap_image_path, swap_filename)
             swap_path = self.download_image(swap_image_path, swap_filename)
+            logger.success("Swap image downloaded: {}", swap_path)
             
             # Check for shutdown after download
             if self.shutdown_requested:
-                print("⏹️ Shutdown requested during download")
+                logger.warning("Shutdown requested during download")
                 return None
             
             # Download target image
-            target_image_path = data.get('targetImage') 
+            target_image_path = data.get('targetImage')
+            logger.info("Target image path: {}", target_image_path)
             if not target_image_path:
                 raise Exception("targetImage path not provided in task data")
+            logger.info("Downloading target image: {} -> {}", target_image_path, target_filename)
             target_path = self.download_image(target_image_path, target_filename)
+            logger.success("Target image downloaded: {}", target_path)
             
             # Check for shutdown before face swap
             if self.shutdown_requested:
-                print("⏹️ Shutdown requested before face swap")
+                logger.warning("Shutdown requested before face swap")
                 return None
             
             # Update status to PROCESSING
+            logger.info("Updating task status to PROCESSING")
             self.update_task_status(task_id, "PROCESSING")
             
             # Run face swap
-            print(f"Running face swap: {swap_path} -> {target_path}")
+            logger.info("Running face swap: {} -> {}", swap_path, target_path)
+            logger.info("Output will be saved to: {}", output_path)
             self.run_face_swap(swap_path, target_path, output_path)
+            logger.success("Face swap completed, output saved")
             
             # Check for shutdown after face swap
             if self.shutdown_requested:
-                print("⏹️ Shutdown requested after face swap")
+                logger.warning("Shutdown requested after face swap")
                 return None
             
             # Upload result to R2
-            print("Uploading result to R2...")
+            logger.info("Uploading result to R2...")
             user_id = data.get('userId')
             public_url = self.upload_to_r2(output_path, task_id, user_id)
             
@@ -470,21 +487,25 @@ class RedisQueueConsumer:
             else:
                 # Fallback - extract from upload path pattern with new structure
                 if user_id:
-                    result_r2_path = f"uploads/{user_id}/outputs/{task_id}.img"
+                    result_r2_path = f"uploads/{user_id}/outputs/{task_id}.jpeg"
                 else:
-                    result_r2_path = f"uploads/anonymous/outputs/{task_id}.img"
+                    result_r2_path = f"uploads/anonymous/outputs/{task_id}.jpeg"
             
             # Update status to DONE with result path
-            self.update_task_status(task_id, "DONE", result_r2_path)
+            logger.info("Updating database with result path: {}", result_r2_path)
+            status_updated = self.update_task_status(task_id, "DONE", result_r2_path)
             
-            print(f"✅ Task {task_id} completed successfully!")
-            print(f"   Result URL: {public_url}")
-            print(f"   Result Path: {result_r2_path}")
+            logger.success("Task {} completed successfully!", task_id)
+            logger.info("Result URL: {}", public_url)
+            logger.info("Result Path: {}", result_r2_path)
+            logger.info("Database Update: {}", "Success" if status_updated else "Failed")
             
             return public_url
             
         except Exception as e:
-            print(f"❌ Task {task_id} failed: {e}")
+            logger.error("Task {} failed: {}", task_id, e)
+            logger.error("Error type: {}", type(e).__name__)
+            logger.exception("Full traceback:")
             # Update status to FAILED
             self.update_task_status(task_id, "FAILED")
             return None
@@ -495,46 +516,46 @@ class RedisQueueConsumer:
                 if file_path and os.path.exists(file_path):
                     try:
                         os.remove(file_path)
-                        print(f"Cleaned up: {file_path}")
+                        logger.debug("Cleaned up: {}", file_path)
                     except Exception as e:
-                        print(f"Failed to clean up {file_path}: {e}")
+                        logger.warning("Failed to clean up {}: {}", file_path, e)
             
             # Clean up output file (optional - keep for debugging)
             # if os.path.exists(output_path):
             #     os.remove(output_path)
             
-    def print_task_details(self, task: Dict[str, Any]):
-        """Print task details in a structured format"""
+    def log_task_details(self, task: Dict[str, Any]):
+        """Log task details in a structured format"""
         task_id = task['task_id']
         priority = task['priority']
         data = task['data']
         
-        print(f"\nProcessing Task: {task_id}")
-        print(f"  Action: {data.get('action', 'unknown')}")
-        print(f"  Priority: {int(priority)}")
-        print(f"  Target Image: {data.get('targetImage', 'N/A')}")
-        print(f"  Swap Image: {data.get('swapImage', 'N/A')}")
-        print(f"  Created: {data.get('createdTime', 'N/A')}")
+        logger.info("Processing task: {}", task_id)
+        logger.debug("  Action: {}", data.get('action', 'unknown'))
+        logger.debug("  Priority: {}", int(priority))
+        logger.debug("  Target Image: {}", data.get('targetImage', 'N/A'))
+        logger.debug("  Swap Image: {}", data.get('swapImage', 'N/A'))
+        logger.debug("  Created: {}", data.get('createdTime', 'N/A'))
         
-        # Print any additional metadata
+        # Log any additional metadata
         for key, value in data.items():
             if key not in ['taskId', 'action', 'targetImage', 'swapImage', 'createdTime']:
-                print(f"  {key}: {value}")
+                logger.debug("  {}: {}", key, value)
         
     def run(self):
         """Main worker - pure PUBSUB consumer"""
-        print("Starting Redis Queue Consumer...")
+        logger.info("Starting Redis Queue Consumer...")
         
         try:
             # Test Redis connection with a simple operation
             self.redis.ping()
-            print("✅ Connected to Upstash Redis")
+            logger.success("Connected to Upstash Redis")
             
         except Exception as e:
-            print(f"❌ Failed to connect to Redis: {e}")
+            logger.error("Failed to connect to Redis: {}", e)
             sys.exit(1)
             
-        print("🚀 Running in PUBSUB-only mode. Press Ctrl+C to stop.\n")
+        logger.info("Running in PUBSUB-only mode. Press Ctrl+C to stop.")
         
         # Run the PUBSUB consumer (this is the main loop)
         self.run_pubsub_consumer()
@@ -545,7 +566,7 @@ def main():
         consumer = RedisQueueConsumer()
         consumer.run()
     except Exception as e:
-        print(f"Failed to start worker: {e}")
+        logger.critical("Failed to start worker: {}", e)
         sys.exit(1)
 
 if __name__ == '__main__':
