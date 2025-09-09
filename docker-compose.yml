@@ -4,6 +4,8 @@ services:
   # Redis Queue Consumer - processes face swap tasks from Upstash Redis
   redis-queue-consumer:
     build: .
+    env_file:
+      - .env.production
     volumes:
       - ./downloads:/app/downloads
       - ./output:/app/output
