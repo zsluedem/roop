@@ -5,3 +5,5 @@ __pycache__
 output
 gfpgan
 uploads
+downloads
+.env
