@@ -26,6 +26,8 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libxrender1 \
     libgomp1 \
+    libgtk2.0-dev \
+    pkg-config \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
