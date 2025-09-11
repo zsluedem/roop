@@ -166,7 +166,6 @@ class RedisQueueConsumer:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5 minute timeout
                 cwd=os.path.dirname(os.path.abspath(__file__))  # Run from roop directory
             )
             
@@ -175,8 +174,6 @@ class RedisQueueConsumer:
                 
             logger.success("Face swap completed successfully: {}", output_path)
             
-        except subprocess.TimeoutExpired:
-            raise Exception("Face swap command timed out after 5 minutes")
         except Exception as e:
             raise Exception(f"Failed to execute face swap: {e}")
             
