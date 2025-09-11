@@ -9,27 +9,6 @@ services:
     volumes:
       - ./downloads:/app/downloads
       - ./output:/app/output
-    environment:
-      # Upstash Redis configuration (required)
-      - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL}
-      - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN}
-      
-      # Cloudflare R2 configuration (required)
-      - R2_ENDPOINT=${R2_ENDPOINT}
-      - R2_ACCESS_KEY=${R2_ACCESS_KEY}
-      - R2_SECRET_KEY=${R2_SECRET_KEY}
-      - R2_BUCKET=${R2_BUCKET}
-      - R2_PUBLIC_URL=${R2_PUBLIC_URL}
-      
-      # API configuration for status updates
-      - API_BASE_URL=${API_BASE_URL:-https://aifacesswap.com}
-      - WORKER_API_KEY=${WORKER_API_KEY}
-      
-      # Processing configuration
-      - DOWNLOAD_DIR=/app/downloads
-      - OUTPUT_DIR=/app/output
-      - POLL_INTERVAL=${POLL_INTERVAL:-1.0}
-      - BLOCKING_TIMEOUT=${BLOCKING_TIMEOUT:-30.0}
     restart: unless-stopped
     # Uses default CMD from Dockerfile: redis_queue_consumer.py
 
