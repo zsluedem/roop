@@ -24,4 +24,5 @@ dependencies = [
     "boto3>=1.40.16",
     # Logging
     "loguru>=0.7.0",
+    "pip>=25.2",
 ]
