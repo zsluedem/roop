@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y \
     libgtk2.0-dev \
     pkg-config \
     curl \
+    python3-distutils python3-dev python3-tk \
     && rm -rf /var/lib/apt/lists/*
 
 # Create symlinks for python3.11
