@@ -34,6 +34,7 @@ import requests
 from dotenv import load_dotenv
 from upstash_redis import Redis
 from loguru import logger
+from roop.utilities import is_gif
 
 # Load environment variables
 load_dotenv()
@@ -153,6 +154,11 @@ class RedisQueueConsumer:
                 '-o', output_path,
                 '--frame-processor', 'face_swapper'
             ]
+            
+            # Add --keep-fps for GIF files to preserve original frame rate
+            if is_gif(target_path):
+                cmd.append('--keep-fps')
+                logger.info("Target is GIF, adding --keep-fps flag")
             
             logger.info("Executing face swap: {}", ' '.join(cmd))
             
@@ -408,11 +414,19 @@ class RedisQueueConsumer:
         task_id = task['task_id']
         data = task['data']
         
-        # Generate unique filenames
+        # Generate unique filenames with original extensions
         unique_id = str(uuid4())[:8]
-        swap_filename = f"swap_{unique_id}.jpg"
-        target_filename = f"target_{unique_id}.jpg"
-        output_filename = f"output_{task_id}_{unique_id}.jpeg"
+        
+        # Extract extensions from original file paths
+        swap_image_path = data.get('swapImage', '')
+        target_image_path = data.get('targetImage', '')
+        
+        swap_ext = swap_image_path.split('.')[-1] if '.' in swap_image_path else 'jpg'
+        target_ext = target_image_path.split('.')[-1] if '.' in target_image_path else 'jpg'
+        
+        swap_filename = f"swap_{unique_id}.{swap_ext}"
+        target_filename = f"target_{unique_id}.{target_ext}"
+        output_filename = f"output_{task_id}_{unique_id}.{target_ext}"
         
         # File paths
         swap_path = None

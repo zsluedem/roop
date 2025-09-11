@@ -188,8 +188,8 @@ def start() -> None:
             create_video(roop.globals.target_path, fps)
     else:
         if is_gif(roop.globals.target_path):
-            update_status(f'Creating gif with {fps} FPS...')
-            create_gif(roop.globals.target_path, fps)
+            update_status('Creating gif with 30 FPS...')
+            create_gif(roop.globals.target_path, 30)
         else:
             update_status('Creating video with 30 FPS...')
             create_video(roop.globals.target_path)
