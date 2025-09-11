@@ -177,17 +177,66 @@ class RedisQueueConsumer:
         except Exception as e:
             raise Exception(f"Failed to execute face swap: {e}")
             
+    def _get_file_extension_and_mime_type(self, file_path: str) -> tuple[str, str]:
+        """
+        Detect the actual file extension and MIME type from the file.
+        Returns (extension, mime_type) tuple.
+        """
+        import mimetypes
+        import imghdr
+        
+        try:
+            # Try to detect image format using imghdr
+            img_format = imghdr.what(file_path)
+            if img_format:
+                # Map imghdr format to extension and MIME type
+                format_map = {
+                    'jpeg': ('.jpg', 'image/jpeg'),
+                    'png': ('.png', 'image/png'),
+                    'gif': ('.gif', 'image/gif'),
+                    'webp': ('.webp', 'image/webp'),
+                    'bmp': ('.bmp', 'image/bmp'),
+                    'tiff': ('.tiff', 'image/tiff')
+                }
+                if img_format in format_map:
+                    return format_map[img_format]
+            
+            # Fallback to mimetypes based on file content/extension
+            mime_type, _ = mimetypes.guess_type(file_path)
+            if mime_type and mime_type.startswith('image/'):
+                ext_map = {
+                    'image/jpeg': '.jpg',
+                    'image/png': '.png', 
+                    'image/gif': '.gif',
+                    'image/webp': '.webp',
+                    'image/bmp': '.bmp',
+                    'image/tiff': '.tiff'
+                }
+                ext = ext_map.get(mime_type, '.jpg')
+                return (ext, mime_type)
+                
+        except Exception as e:
+            logger.warning("Failed to detect file format for {}: {}", file_path, e)
+        
+        # Ultimate fallback
+        return ('.jpg', 'image/jpeg')
+
     def upload_to_r2(self, local_path: str, task_id: str, user_id: str = None) -> str:
         """
         Upload file to Cloudflare R2 and return public URL.
         """
         try:
-            # Generate R2 key with new structure: /uploads/{user_id}/outputs/{task_id}.jpeg
+            # Detect actual file extension and MIME type
+            file_ext, content_type = self._get_file_extension_and_mime_type(local_path)
+            
+            # Generate R2 key with detected extension
             if user_id:
-                r2_key = f"uploads/{user_id}/outputs/{task_id}.jpeg"
+                r2_key = f"uploads/{user_id}/outputs/{task_id}{file_ext}"
             else:
                 # Fallback for anonymous users
-                r2_key = f"uploads/anonymous/outputs/{task_id}.jpeg"
+                r2_key = f"uploads/anonymous/outputs/{task_id}{file_ext}"
+            
+            logger.info("Uploading {} to R2 as {} with content type {}", local_path, r2_key, content_type)
             
             # Upload to R2
             with open(local_path, 'rb') as f:
@@ -195,7 +244,7 @@ class RedisQueueConsumer:
                     f, 
                     self.r2_bucket, 
                     r2_key,
-                    ExtraArgs={'ContentType': 'image/jpeg'}
+                    ExtraArgs={'ContentType': content_type}
                 )
             
             # Generate public URL
@@ -494,11 +543,12 @@ class RedisQueueConsumer:
             if self.r2_public_url and public_url.startswith(self.r2_public_url):
                 result_r2_path = public_url.replace(self.r2_public_url.rstrip('/'), '').lstrip('/')
             else:
-                # Fallback - extract from upload path pattern with new structure
+                # Fallback - extract from upload path pattern with detected extension
+                file_ext, _ = self._get_file_extension_and_mime_type(output_path)
                 if user_id:
-                    result_r2_path = f"uploads/{user_id}/outputs/{task_id}.jpeg"
+                    result_r2_path = f"uploads/{user_id}/outputs/{task_id}{file_ext}"
                 else:
-                    result_r2_path = f"uploads/anonymous/outputs/{task_id}.jpeg"
+                    result_r2_path = f"uploads/anonymous/outputs/{task_id}{file_ext}"
             
             # Update status to DONE with result path
             logger.info("Updating database with result path: {}", result_r2_path)
